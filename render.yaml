@@ -2,6 +2,8 @@ services:
   - type: web
     name: suchka-bot
     env: python
+    region: frankfurt
+    plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: python main.py
     envVars:
@@ -10,6 +12,6 @@ services:
       - key: OPENROUTER_API_KEY
         sync: false
       - key: OPENROUTER_MODEL
-        value: nvidia/nemotron-3-super-120b-a12b:free
+        value: google/gemma-2-9b-it:free
     healthCheckPath: /health
     autoDeploy: true

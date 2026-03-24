@@ -2,7 +2,6 @@ import os
 import json
 import uuid
 import asyncio
-import asyncio
 from datetime import datetime
 from pathlib import Path
 from dotenv import load_dotenv
@@ -10,7 +9,7 @@ from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from telegram.error import BadRequest
 from openai import AsyncOpenAI
-from flask import Flask, request
+from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 
 # Загружаем переменные окружения
@@ -31,16 +30,31 @@ DATA_FILE = Path("user_data.json")
 # Хранилище данных: {user_id: {"chats": {chat_id: {"name": str, "messages": []}}, "active_chat": chat_id}}
 user_data = {}
 
-app = Flask(__name__)
 
-# Flask приложение для health check
-def run_flask():
-    app.run(...)
+class HealthHandler(BaseHTTPRequestHandler):
+    """Простой HTTP-сервер для health check на Render"""
+    def do_GET(self):
+        if self.path == '/health':
+            self.send_response(200)
+            self.send_header('Content-type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(b'OK')
+        else:
+            self.send_response(404)
+            self.end_headers()
+    
+    def log_message(self, format, *args):
+        pass  # Отключаем логирование
 
-threading.Thread(...)
 
-# Глобальная переменная для приложения
-application = None
+def start_health_server():
+    """Запустить HTTP-сервер для health check"""
+    port = int(os.getenv('PORT', 8080))
+    server = HTTPServer(('0.0.0.0', port), HealthHandler)
+    thread = threading.Thread(target=server.serve_forever)
+    thread.daemon = True
+    thread.start()
+    return server
 
 
 def load_data():
@@ -376,8 +390,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     """Запуск бота"""
-    global application
-    
     # Загружаем данные из файла
     load_data()
 
@@ -385,68 +397,33 @@ def main():
     print(f"🔍 TELEGRAM_TOKEN: {'✅' if TELEGRAM_TOKEN and not TELEGRAM_TOKEN.endswith('_YOUR_TELEGRAM_BOT_TOKEN') else '❌'}")
     print(f"🔍 OPENROUTER_API_KEY: {'✅' if OPENROUTER_API_KEY and not OPENROUTER_API_KEY.endswith('_YOUR_API_KEY') else '❌'}")
     print(f"🔍 OPENROUTER_MODEL: {MODEL}")
-    
-    # Определяем режим запуска
+
+    # Запускаем health server для Render
     RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
-    
     if RENDER_EXTERNAL_URL:
-        # Режим Render (webhook)
-        application = Application.builder().token(TELEGRAM_TOKEN).build()
-        
-        # Регистрируем обработчики
-        application.add_handler(CommandHandler("start", start))
-        application.add_handler(CommandHandler("menu", show_menu))
-        application.add_handler(MessageHandler(
-            filters.TEXT & ~filters.COMMAND & filters.Regex(r'^(📋 Список чатов|➕ Новый чат|🔙 Назад в меню)$'),
-            handle_button_click
-        ))
-        application.add_handler(MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            handle_message_or_chat_select
-        ))
-        
-        # Запускаем Flask для webhook и health check
-        def run_flask():
-            app.run(host='0.0.0.0', port=int(os.getenv('PORT', 18012)))
-        
-        flask_thread = threading.Thread(target=run_flask)
-        flask_thread.daemon = True
-        flask_thread.start()
-        
-        print(f"🤖 Бот запущен на Render: {RENDER_EXTERNAL_URL}")
-        
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
-        # Запускаем бота в режиме webhook
-        application.run_webhook(
-            listen='0.0.0.0',
-            port=int(os.getenv('PORT', 18013)),
-            url_path=TELEGRAM_TOKEN,
-            webhook_url=f"{RENDER_EXTERNAL_URL}/{TELEGRAM_TOKEN}"
-        )
-    else:
-        # Локальный режим (polling)
-        application = Application.builder().token(TELEGRAM_TOKEN).build()
+        start_health_server()
+        print(f"🏥 Health check запущен на порту {os.getenv('PORT', 8080)}")
 
-        # Обработчики команд
-        application.add_handler(CommandHandler("start", start))
-        application.add_handler(CommandHandler("menu", show_menu))
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
 
-        # Обработчик кнопок меню
-        application.add_handler(MessageHandler(
-            filters.TEXT & ~filters.COMMAND & filters.Regex(r'^(📋 Список чатов|➕ Новый чат|🔙 Назад в меню)$'),
-            handle_button_click
-        ))
+    # Обработчики команд
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("menu", show_menu))
 
-        # Обработчик выбора чата из списка
-        application.add_handler(MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            handle_message_or_chat_select
-        ))
+    # Обработчик кнопок меню
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND & filters.Regex(r'^(📋 Список чатов|➕ Новый чат|🔙 Назад в меню)$'),
+        handle_button_click
+    ))
 
-        print("🤖 Бот запущен... (Ctrl+C для остановки)")
-        application.run_polling(allowed_updates=Update.ALL_TYPES)
+    # Обработчик выбора чата из списка
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND,
+        handle_message_or_chat_select
+    ))
+
+    print("🤖 Бот запущен... (Ctrl+C для остановки)")
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 if __name__ == "__main__":
