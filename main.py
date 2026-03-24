@@ -398,11 +398,9 @@ def main():
     print(f"🔍 OPENROUTER_API_KEY: {'✅' if OPENROUTER_API_KEY and not OPENROUTER_API_KEY.endswith('_YOUR_API_KEY') else '❌'}")
     print(f"🔍 OPENROUTER_MODEL: {MODEL}")
 
-    # Запускаем health server для Render
-    RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
-    if RENDER_EXTERNAL_URL:
-        start_health_server()
-        print(f"🏥 Health check запущен на порту {os.getenv('PORT', 8080)}")
+    # Запускаем health server для Render (всегда, чтобы health check прошёл)
+    start_health_server()
+    print(f"🏥 Health check запущен на порту {os.getenv('PORT', 8080)}")
 
     application = Application.builder().token(TELEGRAM_TOKEN).build()
 
