@@ -407,7 +407,7 @@ def main():
         
         # Запускаем Flask для webhook и health check
         def run_flask():
-            app.run(host='0.0.0.0', port=int(os.getenv('PORT', 8080)))
+            app.run(host='0.0.0.0', port=int(os.getenv('PORT', 18012)))
         
         flask_thread = threading.Thread(target=run_flask)
         flask_thread.daemon = True
@@ -421,7 +421,7 @@ def main():
         # Запускаем бота в режиме webhook
         application.run_webhook(
             listen='0.0.0.0',
-            port=int(os.getenv('PORT', 10000)),
+            port=int(os.getenv('PORT', 18013)),
             url_path=TELEGRAM_TOKEN,
             webhook_url=f"{RENDER_EXTERNAL_URL}/{TELEGRAM_TOKEN}"
         )
