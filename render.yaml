@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: suchka-bot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: TELEGRAM_TOKEN
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: OPENROUTER_MODEL
+        value: google/gemma-2-9b-it:free
+    healthCheckPath: /health
+    autoDeploy: true

@@ -26,9 +26,24 @@
 
 ## Запуск
 
+### Локально:
 ```bash
 python main.py
 ```
+
+### На Render:
+
+1. Запушьте код в GitHub
+2. Зарегистрируйтесь на [render.com](https://render.com)
+3. Создайте новый **Web Service**
+4. Подключите ваш репозиторий
+5. Настройте переменные окружения:
+   - `TELEGRAM_TOKEN` — токен бота
+   - `OPENROUTER_API_KEY` — API ключ OpenRouter
+   - `OPENROUTER_MODEL` — модель (опционально)
+6. Deploy!
+
+Render автоматически определит `render.yaml` и настроит сервис.
 
 ## Команды
 

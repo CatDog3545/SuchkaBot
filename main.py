@@ -9,6 +9,8 @@ from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from telegram.error import BadRequest
 from openai import AsyncOpenAI
+from flask import Flask, request
+import threading
 
 # Загружаем переменные окружения
 load_dotenv()
@@ -28,6 +30,16 @@ DATA_FILE = Path("user_data.json")
 
 # Хранилище данных: {user_id: {"chats": {chat_id: {"name": str, "messages": []}}, "active_chat": chat_id}}
 user_data = {}
+
+# Flask приложение для health check
+app = Flask(__name__)
+
+@app.route('/health')
+def health():
+    return 'OK', 200
+
+# Глобальная переменная для приложения
+application = None
 
 
 def load_data():
@@ -363,29 +375,69 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     """Запуск бота"""
+    global application
+    
     # Загружаем данные из файла
     load_data()
 
-    application = Application.builder().token(TELEGRAM_TOKEN).build()
+    # Определяем режим запуска
+    RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
+    
+    if RENDER_EXTERNAL_URL:
+        # Режим Render (webhook)
+        application = Application.builder().token(TELEGRAM_TOKEN).build()
+        
+        # Регистрируем обработчики
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("menu", show_menu))
+        application.add_handler(MessageHandler(
+            filters.TEXT & ~filters.COMMAND & filters.Regex(r'^(📋 Список чатов|➕ Новый чат|🔙 Назад в меню)$'),
+            handle_button_click
+        ))
+        application.add_handler(MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            handle_message_or_chat_select
+        ))
+        
+        # Запускаем Flask для webhook и health check
+        def run_flask():
+            app.run(host='0.0.0.0', port=int(os.getenv('PORT', 8080)))
+        
+        flask_thread = threading.Thread(target=run_flask)
+        flask_thread.daemon = True
+        flask_thread.start()
+        
+        print(f"🤖 Бот запущен на Render: {RENDER_EXTERNAL_URL}")
+        
+        # Запускаем бота в режиме webhook
+        application.run_webhook(
+            listen='0.0.0.0',
+            port=int(os.getenv('PORT', 8080)),
+            url_path=TELEGRAM_TOKEN,
+            webhook_url=f"{RENDER_EXTERNAL_URL}/{TELEGRAM_TOKEN}"
+        )
+    else:
+        # Локальный режим (polling)
+        application = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    # Обработчики команд
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("menu", show_menu))
+        # Обработчики команд
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("menu", show_menu))
 
-    # Обработчик кнопок меню
-    application.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND & filters.Regex(r'^(📋 Список чатов|➕ Новый чат|🔙 Назад в меню)$'),
-        handle_button_click
-    ))
+        # Обработчик кнопок меню
+        application.add_handler(MessageHandler(
+            filters.TEXT & ~filters.COMMAND & filters.Regex(r'^(📋 Список чатов|➕ Новый чат|🔙 Назад в меню)$'),
+            handle_button_click
+        ))
 
-    # Обработчик выбора чата из списка
-    application.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND,
-        handle_message_or_chat_select
-    ))
+        # Обработчик выбора чата из списка
+        application.add_handler(MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            handle_message_or_chat_select
+        ))
 
-    print("🤖 Бот запущен... (Ctrl+C для остановки)")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+        print("🤖 Бот запущен... (Ctrl+C для остановки)")
+        application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 if __name__ == "__main__":
