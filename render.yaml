@@ -10,6 +10,6 @@ services:
       - key: OPENROUTER_API_KEY
         sync: false
       - key: OPENROUTER_MODEL
-        value: google/gemma-2-9b-it:free
+        value: nvidia/nemotron-3-super-120b-a12b:free
     healthCheckPath: /health
     autoDeploy: true
