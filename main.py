@@ -2,6 +2,7 @@ import os
 import json
 import uuid
 import asyncio
+import asyncio
 from datetime import datetime
 from pathlib import Path
 from dotenv import load_dotenv
@@ -18,7 +19,6 @@ load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "sk-or-v1-YOUR_API_KEY")
 MODEL = os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-3-super-120b-a12b:free")
-
 # OpenRouter через OpenAI SDK
 openai_client = AsyncOpenAI(
     base_url="https://openrouter.ai/api/v1",
@@ -31,12 +31,13 @@ DATA_FILE = Path("user_data.json")
 # Хранилище данных: {user_id: {"chats": {chat_id: {"name": str, "messages": []}}, "active_chat": chat_id}}
 user_data = {}
 
-# Flask приложение для health check
 app = Flask(__name__)
 
-@app.route('/health')
-def health():
-    return 'OK', 200
+# Flask приложение для health check
+def run_flask():
+    app.run(...)
+
+threading.Thread(...)
 
 # Глобальная переменная для приложения
 application = None
@@ -414,10 +415,13 @@ def main():
         
         print(f"🤖 Бот запущен на Render: {RENDER_EXTERNAL_URL}")
         
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
         # Запускаем бота в режиме webhook
         application.run_webhook(
             listen='0.0.0.0',
-            port=int(os.getenv('PORT', 8080)),
+            port=int(os.getenv('PORT', 10000)),
             url_path=TELEGRAM_TOKEN,
             webhook_url=f"{RENDER_EXTERNAL_URL}/{TELEGRAM_TOKEN}"
         )
