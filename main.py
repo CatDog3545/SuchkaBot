@@ -380,6 +380,11 @@ def main():
     # Загружаем данные из файла
     load_data()
 
+    # Проверка переменных окружения
+    print(f"🔍 TELEGRAM_TOKEN: {'✅' if TELEGRAM_TOKEN and not TELEGRAM_TOKEN.endswith('_YOUR_TELEGRAM_BOT_TOKEN') else '❌'}")
+    print(f"🔍 OPENROUTER_API_KEY: {'✅' if OPENROUTER_API_KEY and not OPENROUTER_API_KEY.endswith('_YOUR_API_KEY') else '❌'}")
+    print(f"🔍 OPENROUTER_MODEL: {MODEL}")
+    
     # Определяем режим запуска
     RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
     
