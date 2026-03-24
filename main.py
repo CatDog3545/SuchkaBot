@@ -17,7 +17,7 @@ load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "sk-or-v1-YOUR_API_KEY")
-MODEL = os.getenv("OPENROUTER_MODEL", "google/gemma-2-9b-it:free")
+MODEL = os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-3-super-120b-a12b:free")
 
 # OpenRouter через OpenAI SDK
 openai_client = AsyncOpenAI(
