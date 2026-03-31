@@ -4,8 +4,8 @@ services:
     env: python
     region: frankfurt
     plan: free
-    buildCommand: pip install -r requirements.txt
-    startCommand: python main.py
+    buildCommand: pip install -r requirements.txt && cd frontend && npm install && npm run build
+    startCommand: python api.py
     envVars:
       - key: TELEGRAM_TOKEN
         sync: false
@@ -13,5 +13,7 @@ services:
         sync: false
       - key: OPENROUTER_MODEL
         value: google/gemma-2-9b-it:free
+      - key: VITE_API_URL
+        value: ""
     healthCheckPath: /health
     autoDeploy: true
