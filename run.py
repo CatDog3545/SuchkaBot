@@ -7,9 +7,10 @@ import signal
 def main():
     processes = []
 
+    api_port = int(os.getenv("PORT", os.getenv("RAILWAY_PORT", "8080")))
     api_proc = subprocess.Popen(
         [sys.executable, "api.py"],
-        env={**os.environ, "PORT": os.getenv("PORT", "8080")},
+        env={**os.environ, "PORT": str(api_port)},
     )
     processes.append(("api", api_proc))
     print(f"API started (PID {api_proc.pid})")
