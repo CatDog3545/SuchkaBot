@@ -4,6 +4,7 @@ import uuid
 import hmac
 import hashlib
 import asyncio
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any
@@ -159,6 +160,23 @@ def get_user_chats(user_id: int) -> dict:
     return user_data[user_id]
 
 
+def get_active_chat(user_id: int) -> dict:
+    user_chats = get_user_chats(user_id)
+    if user_chats["active_chat"] and user_chats["active_chat"] in user_chats["chats"]:
+        return user_chats["chats"][user_chats["active_chat"]]
+    return None
+
+
+def switch_chat(user_id: int, chat_name: str) -> bool:
+    user_chats = get_user_chats(user_id)
+    for chat_id, chat_data in user_chats["chats"].items():
+        if chat_data["name"] == chat_name:
+            user_chats["active_chat"] = chat_id
+            save_data()
+            return True
+    return False
+
+
 def create_new_chat(user_id: int, name: str = None) -> str:
     chat_id = str(uuid.uuid4())[:8]
     if not name:
@@ -172,13 +190,438 @@ def create_new_chat(user_id: int, name: str = None) -> str:
     }
     user_chats["active_chat"] = chat_id
     save_data()
-    return chat_id
+
+
+def run_telegram_bot():
+    """Запуск Telegram бота в отдельном потоке"""
+    import asyncio
+    from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
+    from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+    from telegram.error import BadRequest
+    from openai import AsyncOpenAI
+
+    bot_openai = AsyncOpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=OPENROUTER_API_KEY,
+    )
+
+    MAIN_MENU = ReplyKeyboardMarkup(
+        [[KeyboardButton("📋 Список чатов"), KeyboardButton("➕ Новый чат")]],
+        resize_keyboard=True
+    )
+
+    def get_chats_menu(chat_names):
+        keyboard = [[KeyboardButton(name)] for name in chat_names]
+        keyboard.append([KeyboardButton("🔙 Назад в меню")])
+        return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+    THINKING_STATUSES = [
+        "🤔 Анализирую вопрос...",
+        "💭 Обдумываю ответ...",
+        "🔍 Ищу информацию...",
+        "✍️ Формулирую ответ...",
+    ]
+
+    async def show_thinking(update):
+        for status in THINKING_STATUSES:
+            try:
+                await update.message.chat.send_action(action="typing")
+                await asyncio.sleep(0.7)
+            except Exception:
+                break
+
+    async def stream_response(update, active_chat):
+        full_response = ""
+        message = None
+        last_edit_time = 0
+
+        try:
+            message = await update.message.reply_text("⏳")
+            last_edit_time = asyncio.get_event_loop().time()
+
+            stream = await bot_openai.chat.completions.create(
+                model=MODEL,
+                messages=active_chat["messages"],
+                stream=True
+            )
+
+            async for chunk in stream:
+                delta = chunk.choices[0].delta
+                content = delta.content if delta else None
+                if content:
+                    full_response += content
+                    current_time = asyncio.get_event_loop().time()
+                    if current_time - last_edit_time >= 1.0:
+                        try:
+                            await message.edit_text(full_response[:4096])
+                            last_edit_time = current_time
+                        except Exception:
+                            pass
+
+            if full_response:
+                await message.edit_text(full_response[:4096])
+                active_chat["messages"].append({"role": "assistant", "content": full_response})
+                save_data()
+
+        except BadRequest as e:
+            error_text = str(e)
+            if "message is not modified" not in error_text and "rate limit" not in error_text.lower():
+                if message:
+                    try:
+                        await message.edit_text(f"{full_response[:4000]}\n\n_⚠️ Ошибка: {type(e).__name__}_", parse_mode="Markdown")
+                    except Exception:
+                        pass
+            if full_response:
+                active_chat["messages"].append({"role": "assistant", "content": full_response})
+                save_data()
+        except Exception as e:
+            if message:
+                try:
+                    await message.edit_text(f"{full_response[:4000]}\n\n❌ {type(e).__name__}: {str(e)}")
+                except Exception:
+                    pass
+            else:
+                try:
+                    await update.message.reply_text(f"❌ {type(e).__name__}: {str(e)}")
+                except Exception:
+                    pass
+
+    async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.message.chat_id
+        get_user_chats(user_id)
+        await update.message.reply_text(
+            "👋 Привет! Я AI-бот с поддержкой чатов.\n\n"
+            "Используй кнопки внизу для управления чатами!",
+            reply_markup=MAIN_MENU
+        )
+
+    async def show_menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await update.message.reply_text("📋 Главное меню", reply_markup=MAIN_MENU)
+
+    async def show_chats_list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.message.chat_id
+        user_chats = get_user_chats(user_id)
+        if not user_chats["chats"]:
+            await update.message.reply_text(
+                "📭 У вас пока нет чатов.\nСоздайте новый чат кнопкой «➕ Новый чат»",
+                reply_markup=MAIN_MENU
+            )
+            return
+        chat_names = [chat["name"] for chat in user_chats["chats"].values()]
+        active_chat = get_active_chat(user_id)
+        active_name = active_chat["name"] if active_chat else None
+        message = "📋 **Ваши чаты:**\n\n"
+        for chat_id, chat_data in user_chats["chats"].items():
+            marker = "🟢" if chat_data["name"] == active_name else "⚪"
+            message += f"{marker} {chat_data['name']}\n"
+        await update.message.reply_text(message, reply_markup=get_chats_menu(chat_names))
+
+    async def create_chat_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.message.chat_id
+        chat_id = create_new_chat(user_id)
+        active_chat = get_active_chat(user_id)
+        await update.message.reply_text(
+            f"✅ Создан новый чат: **{active_chat['name']}**\n\n"
+            f"ID: `{chat_id}`\n\n"
+            "Напишите сообщение, чтобы начать диалог!",
+            parse_mode="Markdown",
+            reply_markup=MAIN_MENU
+        )
+
+    async def back_to_menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await update.message.reply_text("🔙 Возврат в главное меню", reply_markup=MAIN_MENU)
+
+    async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.message.chat_id
+        user_message = update.message.text
+        active_chat = get_active_chat(user_id)
+        if not active_chat:
+            create_new_chat(user_id)
+            active_chat = get_active_chat(user_id)
+        active_chat["messages"].append({"role": "user", "content": user_message})
+        await show_thinking(update)
+        await stream_response(update, active_chat)
+
+    async def handle_chat_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.message.chat_id
+        chat_name = update.message.text
+        if switch_chat(user_id, chat_name):
+            active_chat = get_active_chat(user_id)
+            messages = active_chat["messages"][-5:] if active_chat else []
+            if messages:
+                preview = "\n".join([f"{m['role']}: {m['content'][:50]}..." for m in messages])
+                await update.message.reply_text(
+                    f"✅ Переключен на чат: **{chat_name}**\n\n"
+                    f"Последние сообщения:\n_{preview}_",
+                    parse_mode="Markdown",
+                    reply_markup=get_chats_menu([chat_name])
+                )
+            else:
+                await update.message.reply_text(
+                    f"✅ Переключен на чат: **{chat_name}**\n\n"
+                    "Чат пуст, напишите первое сообщение!",
+                    parse_mode="Markdown",
+                    reply_markup=get_chats_menu([chat_name])
+                )
+        else:
+            await update.message.reply_text("❌ Чат не найден. Выберите чат из списка.", reply_markup=MAIN_MENU)
+
+    async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        text = update.message.text
+        if text == "📋 Список чатов":
+            await show_chats_list_cmd(update, context)
+        elif text == "➕ Новый чат":
+            await create_chat_cmd(update, context)
+        elif text == "🔙 Назад в меню":
+            await back_to_menu_cmd(update, context)
+
+    async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        text = update.message.text
+        user_id = update.message.chat_id
+        user_chats = get_user_chats(user_id)
+        chat_exists = any(chat["name"] == text for chat in user_chats["chats"].values())
+        if chat_exists:
+            await handle_chat_select(update, context)
+        else:
+            await handle_message(update, context)
+
+    def bot_main():
+        load_data()
+        print(f"🔍 TELEGRAM_TOKEN: {'✅' if TELEGRAM_TOKEN and not TELEGRAM_TOKEN.endswith('_YOUR_TELEGRAM_BOT_TOKEN') else '❌'}")
+        print(f"🔍 OPENROUTER_API_KEY: {'✅' if OPENROUTER_API_KEY and not OPENROUTER_API_KEY.endswith('_YOUR_API_KEY') else '❌'}")
+        print(f"🔍 OPENROUTER_MODEL: {MODEL}")
+
+        application = Application.builder().token(TELEGRAM_TOKEN).build()
+        application.add_handler(CommandHandler("start", start_cmd))
+        application.add_handler(CommandHandler("menu", show_menu_cmd))
+        application.add_handler(MessageHandler(
+            filters.TEXT & ~filters.COMMAND & filters.Regex(r'^(📋 Список чатов|➕ Новый чат|🔙 Назад в меню)$'),
+            handle_buttons
+        ))
+        application.add_handler(MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            handle_text
+        ))
+        print("🤖 Бот запущен...")
+        application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+    thread = threading.Thread(target=bot_main, daemon=True)
+    thread.start()
+    print("🤖 Telegram bot thread started")
 
 
 @app.on_event("startup")
 def startup():
     load_data()
     print(f"Loaded data for {len(user_data)} users")
+    if TELEGRAM_TOKEN and not TELEGRAM_TOKEN.endswith("_YOUR_TELEGRAM_BOT_TOKEN"):
+        run_telegram_bot()
+
+
+def run_telegram_bot():
+    """Запуск Telegram бота в отдельном потоке"""
+    from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
+    from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+    from telegram.error import BadRequest
+    from openai import AsyncOpenAI
+
+    bot_openai = AsyncOpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=OPENROUTER_API_KEY,
+    )
+
+    MAIN_MENU = ReplyKeyboardMarkup(
+        [[KeyboardButton("📋 Список чатов"), KeyboardButton("➕ Новый чат")]],
+        resize_keyboard=True
+    )
+
+    def get_chats_menu(chat_names):
+        keyboard = [[KeyboardButton(name)] for name in chat_names]
+        keyboard.append([KeyboardButton("🔙 Назад в меню")])
+        return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+    THINKING_STATUSES = [
+        "🤔 Анализирую вопрос...",
+        "💭 Обдумываю ответ...",
+        "🔍 Ищу информацию...",
+        "✍️ Формулирую ответ...",
+    ]
+
+    async def show_thinking(update):
+        for status in THINKING_STATUSES:
+            try:
+                await update.message.chat.send_action(action="typing")
+                await asyncio.sleep(0.7)
+            except Exception:
+                break
+
+    async def stream_response(update, active_chat):
+        full_response = ""
+        message = None
+        last_edit_time = 0
+        try:
+            message = await update.message.reply_text("⏳")
+            last_edit_time = asyncio.get_event_loop().time()
+            stream = await bot_openai.chat.completions.create(
+                model=MODEL, messages=active_chat["messages"], stream=True
+            )
+            async for chunk in stream:
+                delta = chunk.choices[0].delta
+                content = delta.content if delta else None
+                if content:
+                    full_response += content
+                    current_time = asyncio.get_event_loop().time()
+                    if current_time - last_edit_time >= 1.0:
+                        try:
+                            await message.edit_text(full_response[:4096])
+                            last_edit_time = current_time
+                        except Exception:
+                            pass
+            if full_response:
+                await message.edit_text(full_response[:4096])
+                active_chat["messages"].append({"role": "assistant", "content": full_response})
+                save_data()
+        except BadRequest as e:
+            error_text = str(e)
+            if "message is not modified" not in error_text and "rate limit" not in error_text.lower():
+                if message:
+                    try:
+                        await message.edit_text(f"{full_response[:4000]}\n\n_⚠️ Ошибка: {type(e).__name__}_", parse_mode="Markdown")
+                    except Exception:
+                        pass
+            if full_response:
+                active_chat["messages"].append({"role": "assistant", "content": full_response})
+                save_data()
+        except Exception as e:
+            if message:
+                try:
+                    await message.edit_text(f"{full_response[:4000]}\n\n❌ {type(e).__name__}: {str(e)}")
+                except Exception:
+                    pass
+            else:
+                try:
+                    await update.message.reply_text(f"❌ {type(e).__name__}: {str(e)}")
+                except Exception:
+                    pass
+
+    async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.message.chat_id
+        get_user_chats(user_id)
+        await update.message.reply_text(
+            "👋 Привет! Я AI-бот с поддержкой чатов.\n\nИспользуй кнопки внизу для управления чатами!",
+            reply_markup=MAIN_MENU
+        )
+
+    async def show_menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await update.message.reply_text("📋 Главное меню", reply_markup=MAIN_MENU)
+
+    async def show_chats_list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.message.chat_id
+        user_chats = get_user_chats(user_id)
+        if not user_chats["chats"]:
+            await update.message.reply_text(
+                "📭 У вас пока нет чатов.\nСоздайте новый чат кнопкой «➕ Новый чат»",
+                reply_markup=MAIN_MENU
+            )
+            return
+        chat_names = [chat["name"] for chat in user_chats["chats"].values()]
+        active_chat = get_active_chat(user_id)
+        active_name = active_chat["name"] if active_chat else None
+        message = "📋 **Ваши чаты:**\n\n"
+        for chat_id, chat_data in user_chats["chats"].items():
+            marker = "🟢" if chat_data["name"] == active_name else "⚪"
+            message += f"{marker} {chat_data['name']}\n"
+        await update.message.reply_text(message, reply_markup=get_chats_menu(chat_names))
+
+    async def create_chat_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.message.chat_id
+        chat_id = create_new_chat(user_id)
+        active_chat = get_active_chat(user_id)
+        await update.message.reply_text(
+            f"✅ Создан новый чат: **{active_chat['name']}**\n\n"
+            f"ID: `{chat_id}`\n\n"
+            "Напишите сообщение, чтобы начать диалог!",
+            parse_mode="Markdown", reply_markup=MAIN_MENU
+        )
+
+    async def back_to_menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await update.message.reply_text("🔙 Возврат в главное меню", reply_markup=MAIN_MENU)
+
+    async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.message.chat_id
+        user_message = update.message.text
+        active_chat = get_active_chat(user_id)
+        if not active_chat:
+            create_new_chat(user_id)
+            active_chat = get_active_chat(user_id)
+        active_chat["messages"].append({"role": "user", "content": user_message})
+        await show_thinking(update)
+        await stream_response(update, active_chat)
+
+    async def handle_chat_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.message.chat_id
+        chat_name = update.message.text
+        if switch_chat(user_id, chat_name):
+            active_chat = get_active_chat(user_id)
+            messages = active_chat["messages"][-5:] if active_chat else []
+            if messages:
+                preview = "\n".join([f"{m['role']}: {m['content'][:50]}..." for m in messages])
+                await update.message.reply_text(
+                    f"✅ Переключен на чат: **{chat_name}**\n\n"
+                    f"Последние сообщения:\n_{preview}_",
+                    parse_mode="Markdown", reply_markup=get_chats_menu([chat_name])
+                )
+            else:
+                await update.message.reply_text(
+                    f"✅ Переключен на чат: **{chat_name}**\n\n"
+                    "Чат пуст, напишите первое сообщение!",
+                    parse_mode="Markdown", reply_markup=get_chats_menu([chat_name])
+                )
+        else:
+            await update.message.reply_text("❌ Чат не найден. Выберите чат из списка.", reply_markup=MAIN_MENU)
+
+    async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        text = update.message.text
+        if text == "📋 Список чатов":
+            await show_chats_list_cmd(update, context)
+        elif text == "➕ Новый чат":
+            await create_chat_cmd(update, context)
+        elif text == "🔙 Назад в меню":
+            await back_to_menu_cmd(update, context)
+
+    async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        text = update.message.text
+        user_id = update.message.chat_id
+        user_chats = get_user_chats(user_id)
+        chat_exists = any(chat["name"] == text for chat in user_chats["chats"].values())
+        if chat_exists:
+            await handle_chat_select(update, context)
+        else:
+            await handle_message(update, context)
+
+    def bot_main():
+        load_data()
+        print(f"🔍 TELEGRAM_TOKEN: {'✅' if TELEGRAM_TOKEN and not TELEGRAM_TOKEN.endswith('_YOUR_TELEGRAM_BOT_TOKEN') else '❌'}")
+        print(f"🔍 OPENROUTER_API_KEY: {'✅' if OPENROUTER_API_KEY and not OPENROUTER_API_KEY.endswith('_YOUR_API_KEY') else '❌'}")
+        print(f"🔍 OPENROUTER_MODEL: {MODEL}")
+        application = Application.builder().token(TELEGRAM_TOKEN).build()
+        application.add_handler(CommandHandler("start", start_cmd))
+        application.add_handler(CommandHandler("menu", show_menu_cmd))
+        application.add_handler(MessageHandler(
+            filters.TEXT & ~filters.COMMAND & filters.Regex(r'^(📋 Список чатов|➕ Новый чат|🔙 Назад в меню)$'),
+            handle_buttons
+        ))
+        application.add_handler(MessageHandler(
+            filters.TEXT & ~filters.COMMAND, handle_text
+        ))
+        print("🤖 Бот запущен...")
+        application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+    thread = threading.Thread(target=bot_main, daemon=True)
+    thread.start()
+    print("🤖 Telegram bot thread started")
+    if TELEGRAM_TOKEN and not TELEGRAM_TOKEN.endswith("_YOUR_TELEGRAM_BOT_TOKEN"):
+        run_telegram_bot()
 
 
 @app.get("/health")
